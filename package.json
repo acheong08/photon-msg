@@ -1,0 +1,39 @@
+{
+  "name": "photon-msg",
+  "version": "0.1.0",
+  "description": "Command-line client for sending and reading messages through the Photon API",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "photon-msg": "bin/photon-msg.js",
+    "pmsg": "bin/photon-msg.js"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\"",
+    "smoke": "node bin/photon-msg.js --help"
+  },
+  "keywords": [
+    "photon",
+    "imessage",
+    "sms",
+    "messaging",
+    "cli"
+  ],
+  "dependencies": {
+    "@photon-ai/api": "^0.6.0"
+  }
+}
