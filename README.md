@@ -144,7 +144,7 @@ Useful flags on every send: `--reply-to <messageId>` (threading), `--idempotency
 
 ```sh
 photon-msg messages list --limit 20
-photon-msg messages list --platform imessage --direction received --since 2026-11-01T00:00:00Z
+photon-msg messages list --platform imessage --direction received --created-since 2026-11-01T00:00:00Z
 photon-msg messages list --space pho_spc_... --order asc --page-size 50
 photon-msg messages get pho_msg_...
 photon-msg messages watch --platform imessage --interval 2   # JSON lines, ctrl-c to stop
