@@ -3,16 +3,32 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import type { ParseArgsOptionsConfig } from "node:util";
+
 import { CliError, usageError } from "../errors.js";
 import { formatTime } from "../output.js";
+import type { AttachmentRecord, CommandContext } from "../types.js";
+
+/** Normalizes the SDK's download result into a Buffer. */
+async function toBytes(result: unknown): Promise<Buffer> {
+  if (result instanceof Uint8Array) return Buffer.from(result);
+  if (result instanceof ArrayBuffer) return Buffer.from(new Uint8Array(result));
+  if (typeof Blob !== "undefined" && result instanceof Blob) {
+    return Buffer.from(new Uint8Array(await result.arrayBuffer()));
+  }
+  if (typeof result === "object" && result !== null && "data" in result) {
+    return toBytes((result as { data: unknown }).data);
+  }
+  if (typeof result === "string") return Buffer.from(result);
+  throw new CliError("Download returned an unexpected payload type.");
+}
 
 export const upload = {
   options: {
     "content-type": { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { flags, positionals, out, upload: uploadFile, dryRun } = ctx;
+  async run({ flags, positionals, out, upload: uploadFile, dryRun }: CommandContext): Promise<void> {
     const source = positionals[0];
     if (!source) throw usageError("Usage: photon-msg attachments upload <path|url> [--content-type image/png]");
 
@@ -29,15 +45,15 @@ export const upload = {
 };
 
 export const get = {
-  options: {},
-  async run(ctx) {
-    const { client, projectId, positionals, out } = ctx;
+  options: {} as const satisfies ParseArgsOptionsConfig,
+
+  async run({ client, projectId, positionals, out }: CommandContext): Promise<void> {
     const attachmentId = positionals[0];
     if (!attachmentId) throw usageError("Usage: photon-msg attachments get <attachmentId>");
 
-    const attachment = await client.projects.getAttachment({
+    const attachment = (await client.projects.getAttachment({
       path: { id: projectId, attachmentId },
-    });
+    })) as unknown as AttachmentRecord;
 
     out.data(attachment);
     out.heading(`attachment ${attachment.id ?? attachmentId}`);
@@ -53,10 +69,9 @@ export const get = {
 export const download = {
   options: {
     out: { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, positionals, out } = ctx;
+  async run({ client, projectId, flags, positionals, out }: CommandContext): Promise<void> {
     const attachmentId = positionals[0];
     if (!attachmentId) throw usageError("Usage: photon-msg attachments download <attachmentId> --out ./file.png");
 
@@ -72,15 +87,3 @@ export const download = {
     out.success(`wrote ${bytes.length} bytes to ${target}`);
   },
 };
-
-/** Normalizes the SDK's download result into a Buffer. */
-async function toBytes(result) {
-  if (result instanceof Uint8Array) return Buffer.from(result);
-  if (result instanceof ArrayBuffer) return Buffer.from(new Uint8Array(result));
-  if (typeof Blob !== "undefined" && result instanceof Blob) {
-    return Buffer.from(new Uint8Array(await result.arrayBuffer()));
-  }
-  if (result?.data) return toBytes(result.data);
-  if (typeof result === "string") return Buffer.from(result);
-  throw new CliError("Download returned an unexpected payload type.");
-}

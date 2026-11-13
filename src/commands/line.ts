@@ -6,17 +6,20 @@
  * to it. Assignment is idempotent per handle when you reuse the key.
  */
 
-import { pageItems } from "../client.js";
-import { formatTime } from "../output.js";
+import type { ParseArgsOptionsConfig } from "node:util";
+
+import { nextPageToken, pageItems } from "../client.js";
+import { formatTime, type TableColumn } from "../output.js";
 import { usageError } from "../errors.js";
 import { normalizeHandle } from "../target.js";
+import type { AssignmentRecord, CommandContext } from "../types.js";
 
-const columns = [
-  { header: "ASSIGNMENT", value: (a) => a.assignmentId },
-  { header: "HANDLE", value: (a) => a.handle },
-  { header: "LINE", value: (a) => a.assignedPhoneNumber },
-  { header: "CREATED", value: (a) => formatTime(a.createdAt) },
-  { header: "RELEASED", value: (a) => formatTime(a.releasedAt) },
+const columns: Array<TableColumn<AssignmentRecord>> = [
+  { header: "ASSIGNMENT", value: (assignment) => assignment.assignmentId },
+  { header: "HANDLE", value: (assignment) => assignment.handle },
+  { header: "LINE", value: (assignment) => assignment.assignedPhoneNumber },
+  { header: "CREATED", value: (assignment) => formatTime(assignment.createdAt) },
+  { header: "RELEASED", value: (assignment) => formatTime(assignment.releasedAt) },
 ];
 
 export const assign = {
@@ -26,12 +29,13 @@ export const assign = {
     "first-name": { type: "string" },
     "last-name": { type: "string" },
     "idempotency-key": { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, positionals, out, dryRun } = ctx;
+  async run({ client, projectId, flags, positionals, out, dryRun }: CommandContext): Promise<void> {
     const raw = flags.handle ?? positionals[0];
-    if (!raw) throw usageError("Usage: photon-msg line assign --handle <+15551234567> [--email you@example.com]");
+    if (!raw) {
+      throw usageError("Usage: photon-msg line assign --handle <+15551234567> [--email you@example.com]");
+    }
 
     const handle = normalizeHandle(raw);
     const idempotencyKey = flags["idempotency-key"] ?? `photon-msg:line-assign:${handle}`;
@@ -42,16 +46,16 @@ export const assign = {
       return;
     }
 
-    const assignment = await client.projects.platforms.imessage.assignments.create({
+    const assignment = (await client.projects.platforms.imessage.assignments.create({
       path: { id: projectId },
-      headers: { "idempotency-key": idempotencyKey },
+      headers: { idempotencyKey },
       body: {
         handle,
         ...(flags.email ? { email: flags.email } : {}),
         ...(flags["first-name"] ? { firstName: flags["first-name"] } : {}),
         ...(flags["last-name"] ? { lastName: flags["last-name"] } : {}),
       },
-    });
+    })) as unknown as AssignmentRecord;
 
     out.data(assignment);
     out.success(`line ${assignment.assignedPhoneNumber} assigned for ${assignment.handle}`);
@@ -65,12 +69,11 @@ export const list = {
     "include-released": { type: "boolean" },
     "page-size": { type: "string" },
     "page-token": { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, out } = ctx;
-    const query = {};
-    if (flags["include-released"]) query.includeReleased = true;
+  async run({ client, projectId, flags, out }: CommandContext): Promise<void> {
+    const query: Record<string, string | number> = {};
+    if (flags["include-released"]) query.includeReleased = "true";
     if (flags["page-size"]) query.pageSize = Number(flags["page-size"]);
     if (flags["page-token"]) query.pageToken = flags["page-token"];
 
@@ -78,24 +81,24 @@ export const list = {
       path: { id: projectId },
       query,
     });
-    const items = pageItems(page);
+    const items = pageItems<AssignmentRecord>(page);
 
-    out.data({ items, count: items.length, nextPageToken: page?.nextPageToken ?? null });
+    out.data({ items, count: items.length, nextPageToken: nextPageToken(page) ?? null });
     out.table(items, columns);
     if (!flags.quiet) out.info(`${items.length} assignment(s)`);
   },
 };
 
 export const get = {
-  options: {},
-  async run(ctx) {
-    const { client, projectId, positionals, out } = ctx;
+  options: {} as const satisfies ParseArgsOptionsConfig,
+
+  async run({ client, projectId, positionals, out }: CommandContext): Promise<void> {
     const assignmentId = positionals[0];
     if (!assignmentId) throw usageError("Usage: photon-msg line get <assignmentId>");
 
-    const assignment = await client.projects.platforms.imessage.assignments.get({
+    const assignment = (await client.projects.platforms.imessage.assignments.get({
       path: { id: projectId, assignmentId },
-    });
+    })) as unknown as AssignmentRecord;
 
     out.data(assignment);
     out.heading(`assignment ${assignment.assignmentId}`);
@@ -109,9 +112,9 @@ export const get = {
 };
 
 export const release = {
-  options: {},
-  async run(ctx) {
-    const { client, projectId, positionals, out, dryRun } = ctx;
+  options: {} as const satisfies ParseArgsOptionsConfig,
+
+  async run({ client, projectId, positionals, out, dryRun }: CommandContext): Promise<void> {
     const assignmentId = positionals[0];
     if (!assignmentId) throw usageError("Usage: photon-msg line release <assignmentId>");
 

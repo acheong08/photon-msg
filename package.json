@@ -5,16 +5,18 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "photon-msg": "bin/photon-msg.js",
-    "pmsg": "bin/photon-msg.js"
+    "photon-msg": "dist/bin.js",
+    "pmsg": "dist/bin.js"
   },
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
-    "bin",
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -22,9 +24,14 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
-    "test:watch": "node --test --watch \"test/*.test.js\"",
-    "smoke": "node bin/photon-msg.js --help"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node --test \".test-build/test/*.test.js\"",
+    "test:watch": "npm run build:test && node --test --watch \".test-build/test/*.test.js\"",
+    "clean": "rm -rf dist .test-build",
+    "prepublishOnly": "npm run clean && npm run build",
+    "smoke": "npm run build && node dist/bin.js --help"
   },
   "keywords": [
     "photon",
@@ -35,5 +42,10 @@
   ],
   "dependencies": {
     "@photon-ai/api": "^0.6.0"
+  },
+  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
   }
 }

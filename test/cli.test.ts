@@ -3,13 +3,20 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const BIN = fileURLToPath(new URL("../bin/photon-msg.js", import.meta.url));
+// Tests run from .test-build/test, so the compiled binary sits next door.
+const BIN = fileURLToPath(new URL("../src/bin.js", import.meta.url));
+
+interface RunResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
 
 /**
  * Runs the real binary in a child process with a scrubbed environment, so these
  * tests never touch a developer's real credentials.
  */
-const run = (args, env = {}) => {
+const run = (args: string[], env: Record<string, string> = {}): RunResult => {
   const cleanEnv = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("PHOTON_")),
   );
@@ -72,7 +79,7 @@ test("dry-run never requires credentials", () => {
     "--json",
   ]);
   assert.equal(code, 0);
-  const payload = JSON.parse(stdout);
+  const payload = JSON.parse(stdout) as { dryRun: boolean; request: { content: { text: string } } };
   assert.equal(payload.dryRun, true);
   assert.equal(payload.request.content.text, "hi");
 });
@@ -110,6 +117,12 @@ test("conflicting content flags are rejected before any network call", () => {
     "--poll",
     "b",
   ]);
-  assert.equal(2, code);
+  assert.equal(code, 2);
   assert.match(stderr, /Conflicting content flags/);
+});
+
+test("unknown flags fail with the usage code", () => {
+  const { code, stderr } = run(["send", "--nope"]);
+  assert.equal(code, 2);
+  assert.match(stderr, /nope/);
 });

@@ -3,13 +3,14 @@
  */
 
 import { parseOptions, route, wantsHelp } from "./args.js";
-import { validateContentFlags } from "./content.js";
 import { resolveConfig, requireCredentials } from "./config.js";
-import { createPhotonClient } from "./client.js";
+import { createOfflineClient, createPhotonClient } from "./client.js";
 import { createUploader } from "./upload.js";
 import { createOutput } from "./output.js";
 import { CliError, EXIT, errorPayload, toCliError, usageError } from "./errors.js";
 import { COMMAND_HELP, MAIN_HELP, VERSION } from "./help.js";
+import { validateContentFlags } from "./content.js";
+import type { Command, CommandContext, Flags, Uploader } from "./types.js";
 
 import * as send from "./commands/send.js";
 import * as messages from "./commands/messages.js";
@@ -20,7 +21,7 @@ import * as misc from "./commands/misc.js";
 import * as line from "./commands/line.js";
 import * as doctor from "./commands/doctor.js";
 
-export const ROUTES = {
+export const ROUTES: Record<string, Command> = {
   send: { options: send.options, run: send.run },
   "messages list": { options: messages.list.options, run: messages.list.run },
   "messages get": { options: messages.get.options, run: messages.get.run },
@@ -44,7 +45,7 @@ export const ROUTES = {
 };
 
 /** Commands that fully handle --dry-run without touching the network. */
-const DRY_RUN_SAFE = new Set([
+const DRY_RUN_SAFE: ReadonlySet<string> = new Set([
   "send",
   "spaces create",
   "users ensure",
@@ -55,12 +56,16 @@ const DRY_RUN_SAFE = new Set([
   "attachments upload",
 ]);
 
-/**
- * Runs the CLI.
- * @param {string[]} argv
- * @returns {Promise<number>} process exit code
- */
-export async function main(argv = process.argv.slice(2)) {
+const colorEnabled = (): boolean =>
+  Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
+
+/** Builds the credential-free context used by --dry-run. */
+const offlineUploader = (): Uploader => () => {
+  throw usageError("--dry-run cannot upload attachments.");
+};
+
+/** Runs the CLI and resolves to a process exit code. */
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   // Help and version short-circuit before any credential work.
   if (argv.length === 0) {
     process.stdout.write(MAIN_HELP);
@@ -78,9 +83,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const routed = route(argv, ROUTES);
-  const name = routed.name;
+  const commandName = routed.name as string | null;
 
-  if (name === null) {
+  if (commandName === null || routed.spec === null) {
     const output = createOutput({ json: argv.includes("--json"), color: colorEnabled() });
     const cliError = usageError(
       `Unknown command: ${argv.filter((token) => !token.startsWith("-")).slice(0, 2).join(" ") || argv[0]}`,
@@ -90,20 +95,22 @@ export async function main(argv = process.argv.slice(2)) {
     return cliError.exitCode;
   }
 
-  let parsed;
+  const spec = routed.spec;
+
+  let flags: Flags;
+  let positionals: string[];
   try {
-    parsed = parseOptions(routed.rest, routed.spec.options);
+    ({ flags, positionals } = parseOptions(routed.rest, spec.options));
   } catch (error) {
     const cliError = toCliError(error);
     createOutput({ color: colorEnabled() }).error(cliError);
     return cliError.exitCode;
   }
 
-  const { values: flags, positionals } = parsed;
   const json = flags.json === true;
 
   if (wantsHelp(flags)) {
-    process.stdout.write(COMMAND_HELP[name] ?? MAIN_HELP);
+    process.stdout.write(COMMAND_HELP[commandName] ?? MAIN_HELP);
     return EXIT.OK;
   }
   if (flags.version === true) {
@@ -115,54 +122,49 @@ export async function main(argv = process.argv.slice(2)) {
   const dryRun = flags["dry-run"] === true;
 
   try {
-    if (dryRun && !DRY_RUN_SAFE.has(name)) {
-      throw usageError(
-        `--dry-run is not supported for "${name}".`,
-        `Supported for: ${[...DRY_RUN_SAFE].join(", ")}.`,
-      );
+    if (dryRun && !DRY_RUN_SAFE.has(commandName)) {
+      throw usageError(`--dry-run is not supported for "${commandName}".`, `Supported for: ${[...DRY_RUN_SAFE].join(", ")}.`);
     }
 
     // Validate contradictory flags before demanding credentials: a typo should
     // not look like an auth problem.
-    if (name === "send") validateContentFlags(flags);
+    if (commandName === "send") validateContentFlags(flags);
 
     const config = resolveConfig({ flags });
-    const needsCredentials = !dryRun;
+    // Dry runs stay offline; requireCredentials is only enforced when the
+    // command will actually talk to the API.
+    const creds = dryRun ? null : requireCredentials(config);
+    const projectId = creds?.projectId ?? config.projectId ?? "(no project)";
 
-    let client = null;
-    let upload = null;
-    if (needsCredentials) {
-      requireCredentials(config);
-      client = createPhotonClient({
-        apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
-        timeoutMs: config.timeoutMs,
-      });
-      upload = createUploader({
-        apiKey: config.apiKey,
-        projectId: config.projectId,
-        baseUrl: config.baseUrl,
-        timeoutMs: config.timeoutMs,
-      });
-    } else if (config.projectId && config.apiKey) {
-      // Dry runs still resolve nothing over the network; uploads are refused by
-      // the commands themselves.
-      upload = () => {
-        throw usageError("--dry-run cannot upload attachments.");
-      };
-    }
+    const client = creds
+      ? createPhotonClient({
+          apiKey: creds.apiKey,
+          ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+          ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}),
+        })
+      : createOfflineClient();
 
-    await ROUTES[name].run({
+    const upload: Uploader = creds
+      ? createUploader({
+          apiKey: creds.apiKey,
+          projectId: creds.projectId,
+          ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+          ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}),
+        })
+      : offlineUploader();
+
+    const context: CommandContext = {
       flags,
       positionals,
       config,
-      projectId: config.projectId,
+      projectId,
       client,
       upload,
       out,
       dryRun,
-    });
+    };
 
+    await spec.run(context);
     return EXIT.OK;
   } catch (error) {
     const cliError = toCliError(error);
@@ -178,10 +180,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const colorEnabled = () => Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
-
 /** True when the CLI has a route for the given name. */
-export const hasRoute = (name) => Object.hasOwn(ROUTES, name);
+export const hasRoute = (name: string): boolean => Object.hasOwn(ROUTES, name);
 
 export { CliError };
-export const commands = Object.keys(ROUTES);
+export const commands: string[] = Object.keys(ROUTES);

@@ -1,6 +1,6 @@
 # photon-msg
 
-A command-line client for **sending and reading messages through the [Photon](https://photon.codes) API**, built on the official [`@photon-ai/api`](https://www.npmjs.com/package/@photon-ai/api) SDK.
+A command-line client for **sending and reading messages through the [Photon](https://photon.codes) API**, written in TypeScript on top of the official [`@photon-ai/api`](https://www.npmjs.com/package/@photon-ai/api) SDK.
 
 It covers the whole outbound surface the API exposes — text, images and files, voice notes, polls, reactions, edits, unsends, read receipts, typing indicators, participant changes and grouped messages — across iMessage, SMS, email, WhatsApp, WhatsApp Business and Telegram.
 
@@ -22,7 +22,7 @@ npm install --global photon-msg
 npx photon-msg --help
 ```
 
-Requires Node.js 20 or newer. The package ships `photon-msg` and `pmsg` binaries.
+Requires Node.js 20 or newer. The package ships `photon-msg` and `pmsg` binaries plus TypeScript declarations.
 
 ## Credentials
 
@@ -207,26 +207,40 @@ pho_msg_0xdm9rj40ah8tt6tfya6bb46a5   dispatched → delivered
 
 ## Using it as a library
 
-```js
+The building blocks are exported with their types, so a script or agent can reuse
+them without shelling out.
+
+```ts
+import { randomUUID } from "node:crypto";
 import { createPhotonClient, buildMessage, resolveTarget } from "photon-msg";
 
-const client = createPhotonClient({ apiKey: process.env.PHOTON_API_KEY });
+const apiKey = process.env.PHOTON_API_KEY!;
+const projectId = process.env.PHOTON_PROJECT_ID!;
+const client = createPhotonClient({ apiKey });
+
 const { content } = await buildMessage({
   flags: { text: "hello" },
-  upload: async () => { throw new Error("no attachments here"); },
+  upload: async () => {
+    throw new Error("no attachments in this example");
+  },
   getUsers: async () => [],
 });
+
 const target = await resolveTarget({
   client,
-  projectId: process.env.PHOTON_PROJECT_ID,
+  projectId,
   flags: { to: "+14155550123", as: "+16285024649" },
 });
+
 await client.projects.sendMessage({
-  path: { id: process.env.PHOTON_PROJECT_ID },
-  headers: { "idempotency-key": crypto.randomUUID() },
-  body: { ...target, content },
+  path: { id: projectId },
+  headers: { "idempotency-key": randomUUID() },
+  body: { spaceId: target.spaceId, senderId: target.senderId, content },
 });
 ```
+
+Content payloads are typed with the SDK's own `SendContent` union, so a payload
+that compiles is one the API accepts in shape.
 
 ## Scope
 
@@ -244,11 +258,20 @@ Notable API behaviours this CLI surfaces rather than hides:
 ## Development
 
 ```sh
-npm install
-npm test          # 62 tests, no network required
+npm install        # installs the SDK and the TypeScript toolchain
+npm run typecheck  # tsc --noEmit, strict
+npm test           # compiles src + tests, then runs 65 tests
+npm run build      # emits dist/ with declarations
 ```
 
-Tests cover content assembly, targeting, upload framing, error mapping and the real binary's behaviour. They never need credentials.
+The project is TypeScript in strict mode with `noUncheckedIndexedAccess`,
+`verbatimModuleSyntax` and ESM `NodeNext` resolution. Sources live in `src/`,
+tests in `test/`; both are compiled before the suite runs, so the tests exercise
+the same JavaScript the published package ships.
+
+Tests cover content assembly, targeting, upload framing, error mapping and the
+real binary's behaviour. They never need credentials or network access. CI runs
+typecheck, tests and a build smoke test on Node 20, 22 and 24.
 
 Live smoke test against a real project:
 

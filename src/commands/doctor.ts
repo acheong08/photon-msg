@@ -4,29 +4,49 @@
  * Every check is read-only, so running it never mutates state.
  */
 
+import type { ParseArgsOptionsConfig } from "node:util";
+
 import { CliError } from "../errors.js";
 import { redact } from "../config.js";
 import { pageItems } from "../client.js";
+import type { CommandContext } from "../types.js";
 
-export const options = {};
+interface Check {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
 
-export async function run(ctx) {
-  const { client, projectId, config, out, flags } = ctx;
-  const checks = [];
+export const options = {} as const satisfies ParseArgsOptionsConfig;
+
+export async function run({ client, projectId, config, out, flags }: CommandContext): Promise<void> {
+  const checks: Check[] = [];
 
   checks.push({ name: "api key", ok: Boolean(config.apiKey), detail: redact(config.apiKey) });
-  checks.push({ name: "project id", ok: Boolean(projectId), detail: projectId ?? "" });
-  checks.push({ name: "base url", ok: true, detail: config.baseUrl ?? "https://api.photon.codes (default)" });
-  checks.push({ name: "agent handle", ok: Boolean(config.agentHandle), detail: config.agentHandle ?? "(not set)" });
+  checks.push({ name: "project id", ok: Boolean(projectId), detail: projectId });
+  checks.push({
+    name: "base url",
+    ok: true,
+    detail: config.baseUrl ?? "https://api.photon.codes (default)",
+  });
+  checks.push({
+    name: "agent handle",
+    ok: Boolean(config.agentHandle),
+    detail: config.agentHandle ?? "(not set)",
+  });
 
   try {
     const page = await client.projects.listMessages({
       path: { id: projectId },
       query: { pageSize: 1 },
     });
-    checks.push({ name: "list messages", ok: true, detail: `${pageItems(page).length} item(s) in probe page` });
+    checks.push({
+      name: "list messages",
+      ok: true,
+      detail: `${pageItems(page).length} item(s) in probe page`,
+    });
   } catch (error) {
-    checks.push({ name: "list messages", ok: false, detail: error.message });
+    checks.push({ name: "list messages", ok: false, detail: (error as Error).message });
   }
 
   const required = checks.filter((check) => check.name !== "agent handle");
@@ -44,6 +64,6 @@ export async function run(ctx) {
 
   if (!ok) {
     const failure = required.find((check) => !check.ok);
-    throw new CliError(`Doctor check failed: ${failure.name}`, { hint: failure.detail });
+    throw new CliError(`Doctor check failed: ${failure?.name ?? "unknown"}`, { hint: failure?.detail });
   }
 }

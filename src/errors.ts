@@ -1,8 +1,8 @@
 /**
  * Error types and exit codes.
  *
- * Every failure path in the CLI funnels through `CliError`, so callers always
- * get a stable `exitCode` plus an optional actionable `hint`.
+ * Every failure path funnels through `CliError`, so callers always get a stable
+ * `exitCode` plus an optional actionable `hint`.
  */
 
 export const EXIT = {
@@ -13,14 +13,24 @@ export const EXIT = {
   NOT_FOUND: 4,
   FORBIDDEN: 5,
   CONFLICT: 6,
-};
+} as const;
+
+export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
+
+export interface CliErrorOptions {
+  exitCode?: number;
+  hint?: string;
+  code?: string;
+  details?: unknown;
+}
 
 export class CliError extends Error {
-  /**
-   * @param {string} message Human-readable summary.
-   * @param {{exitCode?: number, hint?: string, code?: string, details?: unknown}} [options]
-   */
-  constructor(message, options = {}) {
+  readonly exitCode: number;
+  readonly hint?: string;
+  readonly code?: string;
+  readonly details?: unknown;
+
+  constructor(message: string, options: CliErrorOptions = {}) {
     super(message);
     this.name = "CliError";
     this.exitCode = options.exitCode ?? EXIT.FAILURE;
@@ -31,20 +41,16 @@ export class CliError extends Error {
 }
 
 /** Usage error: bad flags, missing required arguments. */
-export const usageError = (message, hint) =>
+export const usageError = (message: string, hint?: string): CliError =>
   new CliError(message, { exitCode: EXIT.USAGE, hint, code: "USAGE" });
 
-/**
- * Guidance for problem codes the API returns. The shared-line case is the one
- * that trips people up most often: a pooled line cannot open a conversation.
- */
-export const PROBLEM_HINTS = {
+/** Problem codes the API returns, mapped to guidance. */
+export const PROBLEM_HINTS: Record<string, string> = {
   SHARED_LINE_INBOUND_REQUIRED:
     "This line is a pooled shared line, so it cannot message someone who has not written to it first. " +
     "Have the recipient send any message to the line, then reply inside that space. " +
     "For agent-initiated messages you need a purchased SMS number or a dedicated iMessage line.",
-  SHARED_LINE_GROUP_UNSUPPORTED:
-    "Pooled shared lines only carry direct conversations, not group chats.",
+  SHARED_LINE_GROUP_UNSUPPORTED: "Pooled shared lines only carry direct conversations, not group chats.",
   NOT_AUTHENTICATED: "Set PHOTON_API_KEY to a project API key, or pass --api-key.",
   INSUFFICIENT_SCOPE:
     "The API key is missing a permission this call needs. Project keys need project:read / project:write; " +
@@ -60,7 +66,7 @@ export const PROBLEM_HINTS = {
   UNSUPPORTED_CONTENT: "This platform does not support that content type. Check the platform's feature support.",
 };
 
-const EXIT_BY_STATUS = {
+const EXIT_BY_STATUS: Record<number, number> = {
   401: EXIT.AUTH,
   403: EXIT.FORBIDDEN,
   404: EXIT.NOT_FOUND,
@@ -69,18 +75,31 @@ const EXIT_BY_STATUS = {
   429: EXIT.FAILURE,
 };
 
-/**
- * True for `ApiError` instances from @photon-ai/api without importing the class
- * (duck-typed so tests can pass plain objects).
- */
-export const isApiError = (error) =>
-  Boolean(error) && typeof error.status === "number" && typeof error.message === "string";
+/** The shape of an API problem document. */
+export interface ProblemBody {
+  code?: string;
+  detail?: string;
+  title?: string;
+  requestId?: string;
+  type?: string;
+  [key: string]: unknown;
+}
 
-/**
- * Normalizes anything thrown into a CliError.
- * @returns {CliError}
- */
-export function toCliError(error) {
+/** Structural type of an `@photon-ai/api` error, without importing the class. */
+export interface ApiErrorLike {
+  status: number;
+  message: string;
+  body?: ProblemBody;
+}
+
+export const isApiError = (error: unknown): error is ApiErrorLike =>
+  typeof error === "object" &&
+  error !== null &&
+  typeof (error as { status?: unknown }).status === "number" &&
+  typeof (error as { message?: unknown }).message === "string";
+
+/** Normalizes anything thrown into a CliError. */
+export function toCliError(error: unknown): CliError {
   if (error instanceof CliError) return error;
 
   if (isApiError(error)) {
@@ -105,10 +124,10 @@ export function toCliError(error) {
 }
 
 /** Serializes an error for `--json` output. */
-export const errorPayload = (cliError) => ({
+export const errorPayload = (cliError: CliError) => ({
   error: {
     message: cliError.message,
-    code: cliError.code,
+    code: cliError.code ?? null,
     exitCode: cliError.exitCode,
     hint: cliError.hint ?? null,
     details: cliError.details ?? null,

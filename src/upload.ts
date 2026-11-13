@@ -10,11 +10,12 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
-import { CliError, usageError } from "./errors.js";
+import { CliError, EXIT, usageError, type ProblemBody } from "./errors.js";
+import type { Uploader } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.photon.codes";
 
-const TYPES = {
+const TYPES: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -32,17 +33,29 @@ const TYPES = {
 };
 
 /** Best-effort content type from a filename extension. */
-export function contentTypeFor(filename) {
+export function contentTypeFor(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   return TYPES[ext] ?? "application/octet-stream";
 }
 
+export interface MultipartInput {
+  descriptor: Record<string, unknown>;
+  bytes: Uint8Array;
+  contentType: string;
+  boundary: string;
+}
+
 /**
- * Builds the `multipart/related` body by hand so the part headers are exactly
- * what the API documents.
- * @param {{descriptor: object, bytes: Uint8Array, contentType: string, boundary: string}} input
+ * Builds the `multipart/related` body by hand so the framing is exactly what the
+ * API documents: two parts, no extra headers. (The API rejects unsupported
+ * content-type parameters and part headers, which is why nothing else is added.)
  */
-export function buildMultipartRelated({ descriptor, bytes, contentType, boundary }) {
+export function buildMultipartRelated({
+  descriptor,
+  bytes,
+  contentType,
+  boundary,
+}: MultipartInput): Uint8Array {
   const encoder = new TextEncoder();
   const head =
     `--${boundary}\r\n` +
@@ -63,30 +76,46 @@ export function buildMultipartRelated({ descriptor, bytes, contentType, boundary
   return body;
 }
 
+interface LoadedSource {
+  bytes: Uint8Array;
+  filename: string;
+}
+
 /** Loads bytes from a local path or an http(s) URL. */
-async function loadSource(source, fetchImpl) {
+async function loadSource(source: string, fetchImpl: typeof globalThis.fetch): Promise<LoadedSource> {
   if (/^https?:\/\//i.test(source)) {
     const response = await fetchImpl(source);
     if (!response.ok) {
       throw new CliError(`Could not download ${source}: HTTP ${response.status}`);
     }
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    return { bytes: buffer, filename: basename(new URL(source).pathname) || "download" };
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { bytes, filename: basename(new URL(source).pathname) || "download" };
   }
   try {
     const bytes = new Uint8Array(await readFile(source));
     return { bytes, filename: basename(source) };
   } catch (error) {
-    throw usageError(`Could not read ${source}: ${error.message}`);
+    throw usageError(`Could not read ${source}: ${(error as Error).message}`);
   }
 }
 
-/**
- * @param {{apiKey: string, projectId: string, baseUrl?: string, fetch?: typeof globalThis.fetch, timeoutMs?: number}} options
- * @returns {(source: string, options?: {contentType?: string}) => Promise<string>} returns an attachment ID
- */
-export function createUploader({ apiKey, projectId, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch, timeoutMs }) {
-  return async function upload(source, { contentType } = {}) {
+export interface UploaderOptions {
+  apiKey: string;
+  projectId: string;
+  baseUrl?: string;
+  fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+}
+
+/** Creates an uploader bound to one project. Returns an attachment ID. */
+export function createUploader({
+  apiKey,
+  projectId,
+  baseUrl = DEFAULT_BASE_URL,
+  fetch: fetchImpl = globalThis.fetch,
+  timeoutMs,
+}: UploaderOptions): Uploader {
+  return async function upload(source, { contentType } = {}): Promise<string> {
     const { bytes, filename } = await loadSource(source, fetchImpl);
     if (bytes.length === 0) throw usageError(`${source} is empty.`);
 
@@ -109,22 +138,22 @@ export function createUploader({ apiKey, projectId, baseUrl = DEFAULT_BASE_URL, 
     });
 
     const text = await response.text();
-    let payload;
+    let payload: ProblemBody & { id?: string; attachmentId?: string; attachment?: { id?: string } };
     try {
-      payload = text ? JSON.parse(text) : {};
+      payload = text ? (JSON.parse(text) as typeof payload) : {};
     } catch {
       payload = { raw: text };
     }
 
     if (!response.ok) {
-      const detail = payload?.detail ?? payload?.title ?? text.slice(0, 200);
+      const detail = payload.detail ?? payload.title ?? text.slice(0, 200);
       throw new CliError(`Attachment upload failed (HTTP ${response.status}): ${detail}`, {
-        exitCode: response.status === 401 ? 3 : response.status === 403 ? 5 : 1,
-        code: payload?.code,
+        exitCode: response.status === 401 ? EXIT.AUTH : response.status === 403 ? EXIT.FORBIDDEN : EXIT.FAILURE,
+        ...(payload.code ? { code: payload.code } : {}),
       });
     }
 
-    const id = payload?.id ?? payload?.attachmentId ?? payload?.attachment?.id;
+    const id = payload.id ?? payload.attachmentId ?? payload.attachment?.id;
     if (!id) throw new CliError("Upload succeeded but the response carried no attachment ID.");
     return id;
   };

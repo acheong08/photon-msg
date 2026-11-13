@@ -6,8 +6,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { ParseArgsOptionsConfig } from "node:util";
+
 import { usageError } from "../errors.js";
 import { resolveTarget } from "../target.js";
+import type { CommandContext } from "../types.js";
 
 export const typing = {
   options: {
@@ -15,23 +18,26 @@ export const typing = {
     as: { type: "string" },
     on: { type: "boolean" },
     off: { type: "boolean" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, out, dryRun, config } = ctx;
-    if (!flags.space) throw usageError("Pass --space <spaceId> (using --to here would create a conversation, which typing should not do).");
+  async run({ client, projectId, flags, out, dryRun, config }: CommandContext): Promise<void> {
+    if (!flags.space) {
+      throw usageError(
+        "Pass --space <spaceId> (using --to here would create a conversation, which typing should not do).",
+      );
+    }
     if (flags.on === flags.off) throw usageError("Pass exactly one of --on or --off.");
 
     const typingState = flags.on === true;
-    const target = dryRun
-      ? { senderId: flags.as ?? config.agentHandle ?? "(agent)" }
-      : await resolveTarget({ client, projectId, flags, defaultHandle: config.agentHandle });
 
     if (dryRun) {
-      out.data({ dryRun: true, spaceId: flags.space, senderId: target.senderId, typing: typingState });
+      const sender = flags.as ?? config.agentHandle ?? "(agent)";
+      out.data({ dryRun: true, spaceId: flags.space, senderId: `${sender} (resolved at send time)`, typing: typingState });
       out.line(`would set typing=${typingState} in ${flags.space}`);
       return;
     }
+
+    const target = await resolveTarget({ client, projectId, flags, defaultHandle: config.agentHandle });
 
     await client.projects.setSpaceTyping({
       path: { id: projectId, spaceId: flags.space },
@@ -46,14 +52,14 @@ export const typing = {
 export const read = {
   options: {
     "idempotency-key": { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, positionals, out, dryRun } = ctx;
+  async run({ client, projectId, flags, positionals, out, dryRun }: CommandContext): Promise<void> {
     const messageId = positionals[0];
     if (!messageId) throw usageError("Usage: photon-msg read <messageId>");
 
     const idempotencyKey = flags["idempotency-key"] ?? randomUUID();
+
     if (dryRun) {
       out.data({ dryRun: true, messageId, idempotencyKey });
       out.line(`would mark ${messageId} read`);

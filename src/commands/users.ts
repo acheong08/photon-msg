@@ -2,49 +2,56 @@
  * `users` — the people and agents inside a project.
  */
 
-import { pageItems, handleOf } from "../client.js";
-import { formatTime } from "../output.js";
+import type { ParseArgsOptionsConfig } from "node:util";
+
+import { handleOf, nextPageToken, pageItems } from "../client.js";
+import { formatTime, type TableColumn } from "../output.js";
 import { usageError } from "../errors.js";
 import { normalizeHandle } from "../target.js";
+import type { CommandContext, UserRecord } from "../types.js";
 
 export const list = {
   options: {
     platform: { type: "string" },
     "page-size": { type: "string" },
     "page-token": { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, out } = ctx;
-    const query = {};
+  async run({ client, projectId, flags, out }: CommandContext): Promise<void> {
+    const query: Record<string, string | number> = {};
     if (flags.platform) query.platform = flags.platform;
     if (flags["page-size"]) query.pageSize = Number(flags["page-size"]);
     if (flags["page-token"]) query.pageToken = flags["page-token"];
 
     const page = await client.projects.listUsers({ path: { id: projectId }, query });
-    const items = pageItems(page);
+    const items = pageItems<UserRecord>(page);
 
-    out.data({ items, count: items.length, nextPageToken: page?.nextPageToken ?? null });
-    out.table(items, [
-      { header: "ID", value: (u) => u.id },
-      { header: "PLATFORM", value: (u) => u.platform },
-      { header: "KIND", value: (u) => u.kind },
-      { header: "TYPE", value: (u) => u.type ?? "" },
-      { header: "HANDLE", value: (u) => handleOf(u) },
-      { header: "CREATED", value: (u) => formatTime(u.createdAt) },
-    ]);
+    const columns: Array<TableColumn<UserRecord>> = [
+      { header: "ID", value: (user) => user.id },
+      { header: "PLATFORM", value: (user) => user.platform },
+      { header: "KIND", value: (user) => user.kind },
+      { header: "TYPE", value: (user) => user.type ?? "" },
+      { header: "HANDLE", value: (user) => handleOf(user) },
+      { header: "CREATED", value: (user) => formatTime(user.createdAt) },
+    ];
+
+    out.data({ items, count: items.length, nextPageToken: nextPageToken(page) ?? null });
+    out.table(items, columns);
     if (!flags.quiet) out.info(`${items.length} user(s)`);
   },
 };
 
 export const get = {
-  options: {},
-  async run(ctx) {
-    const { client, projectId, positionals, out } = ctx;
+  options: {} as const satisfies ParseArgsOptionsConfig,
+
+  async run({ client, projectId, positionals, out }: CommandContext): Promise<void> {
     const userId = positionals[0];
     if (!userId) throw usageError("Usage: photon-msg users get <userId>");
 
-    const user = await client.projects.getUser({ path: { id: projectId, userId } });
+    const user = (await client.projects.getUser({
+      path: { id: projectId, userId },
+    })) as unknown as UserRecord;
+
     out.data(user);
     out.heading(`user ${user.id}`);
     out.keyValue([
@@ -61,10 +68,9 @@ export const ensure = {
   options: {
     handle: { type: "string" },
     platform: { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, positionals, out, dryRun } = ctx;
+  async run({ client, projectId, flags, positionals, out, dryRun }: CommandContext): Promise<void> {
     const raw = flags.handle ?? positionals[0];
     if (!raw) throw usageError("Usage: photon-msg users ensure --handle <handle> [--platform imessage]");
 
@@ -77,10 +83,10 @@ export const ensure = {
       return;
     }
 
-    const user = await client.projects.createOrGetUser({
+    const user = (await client.projects.createOrGetUser({
       path: { id: projectId },
       body: { handle, platform },
-    });
+    })) as unknown as UserRecord;
 
     out.data(user);
     out.success(`${user.id} ${handleOf(user)} (${user.kind}, ${user.platform})`);

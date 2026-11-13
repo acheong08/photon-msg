@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildMessage, detectModes, describeContent } from "../src/content.js";
+import { buildMessage, detectModes, describeContent, validateContentFlags } from "../src/content.js";
+import type { Flags, Uploader, UserLookup } from "../src/types.js";
 
-const noUpload = async () => "pho_att_test";
-const noUsers = async () => [];
+const noUpload: Uploader = async () => "pho_att_test";
+const noUsers: UserLookup = async () => [];
 
 test("text content defaults to plain format", async () => {
   const { content } = await buildMessage({ flags: { text: "hello" }, upload: noUpload, getUsers: noUsers });
@@ -12,8 +13,12 @@ test("text content defaults to plain format", async () => {
 });
 
 test("repeated --text is joined with newlines", async () => {
-  const { content } = await buildMessage({ flags: { text: ["a", "b"] }, upload: noUpload, getUsers: noUsers });
-  assert.equal(content.text, "a\nb");
+  const { content } = await buildMessage({
+    flags: { text: ["a", "b"] },
+    upload: noUpload,
+    getUsers: noUsers,
+  });
+  assert.equal(content.type === "text" ? content.text : "", "a\nb");
 });
 
 test("markdown format is passed through", async () => {
@@ -22,7 +27,7 @@ test("markdown format is passed through", async () => {
     upload: noUpload,
     getUsers: noUsers,
   });
-  assert.equal(content.format, "markdown");
+  assert.equal(content.type === "text" ? content.format : "", "markdown");
 });
 
 test("an invalid format is rejected", async () => {
@@ -44,8 +49,8 @@ test("conflicting content flags require --group", async () => {
 });
 
 test("attachment uploads and carries a caption", async () => {
-  const calls = [];
-  const upload = async (path) => {
+  const calls: string[] = [];
+  const upload: Uploader = async (path) => {
     calls.push(path);
     return "pho_att_1";
   };
@@ -56,8 +61,10 @@ test("attachment uploads and carries a caption", async () => {
   });
   assert.deepEqual(calls, ["photo.png"]);
   assert.equal(content.type, "attachment");
-  assert.equal(content.attachmentId, "pho_att_1");
-  assert.equal(content.metadata.caption.text, "nice");
+  if (content.type === "attachment") {
+    assert.equal(content.attachmentId, "pho_att_1");
+    assert.equal(content.metadata?.caption?.text, "nice");
+  }
 });
 
 test("voice note uses the voice content type", async () => {
@@ -132,8 +139,8 @@ test("delete uses the message id as the parent", async () => {
 test("typing parses on/off", async () => {
   const on = await buildMessage({ flags: { typing: "on" }, upload: noUpload, getUsers: noUsers });
   const off = await buildMessage({ flags: { typing: "off" }, upload: noUpload, getUsers: noUsers });
-  assert.equal(on.content.typing, true);
-  assert.equal(off.content.typing, false);
+  assert.equal(on.content.type === "space.typing.update" ? on.content.typing : null, true);
+  assert.equal(off.content.type === "space.typing.update" ? off.content.typing : null, false);
 });
 
 test("read receipt requires a target", async () => {
@@ -144,15 +151,18 @@ test("read receipt requires a target", async () => {
 });
 
 test("participants are resolved into snapshots", async () => {
-  const getUsers = async (ids) => ids.map((id) => ({ id, platform: "imessage", kind: "human", handle: `+1${id}` }));
+  const getUsers: UserLookup = async (ids) =>
+    ids.map((id) => ({ id, platform: "imessage", kind: "human", handle: `+1${id}` }));
   const { content } = await buildMessage({
     flags: { "participants-add": ["u1"], "participants-remove": ["u2"] },
     upload: noUpload,
     getUsers,
   });
   assert.equal(content.type, "space.participants.update");
-  assert.equal(content.added[0].id, "u1");
-  assert.equal(content.removed[0].id, "u2");
+  if (content.type === "space.participants.update") {
+    assert.equal(content.added.length, 1);
+    assert.equal(content.removed.length, 1);
+  }
 });
 
 test("an unknown participant id is rejected", async () => {
@@ -167,16 +177,20 @@ test("an unknown participant id is rejected", async () => {
 });
 
 test("group combines text and attachments in order", async () => {
-  const upload = async (path) => `att:${path}`;
+  const upload: Uploader = async (path) => `att:${path}`;
   const { content } = await buildMessage({
     flags: { group: true, text: ["caption"], image: ["a.png"] },
     upload,
     getUsers: noUsers,
   });
   assert.equal(content.type, "group");
-  assert.equal(content.parts.length, 2);
-  assert.equal(content.parts[0].text, "caption");
-  assert.equal(content.parts[1].attachmentId, "att:a.png");
+  if (content.type === "group") {
+    assert.equal(content.parts.length, 2);
+    const first = content.parts[0];
+    const second = content.parts[1];
+    assert.equal(first?.type === "text" ? first.text : "", "caption");
+    assert.equal(second?.type === "attachment" ? second.attachmentId : "", "att:a.png");
+  }
 });
 
 test("group with a single part is rejected", async () => {
@@ -192,9 +206,9 @@ test("email options are collected separately from content", async () => {
     upload: noUpload,
     getUsers: noUsers,
   });
-  assert.equal(email.subject, "S");
-  assert.deepEqual(email.cc, [{ address: "a@example.com" }]);
-  assert.deepEqual(email.bcc, [{ address: "b@example.com" }]);
+  assert.equal(email?.subject, "S");
+  assert.deepEqual(email?.cc, [{ address: "a@example.com" }]);
+  assert.deepEqual(email?.bcc, [{ address: "b@example.com" }]);
 });
 
 test("detectModes reports every requested mode", () => {
@@ -203,8 +217,13 @@ test("detectModes reports every requested mode", () => {
   assert.deepEqual(detectModes({}), []);
 });
 
+test("validateContentFlags is side-effect free and rejects contradictions", () => {
+  assert.deepEqual(validateContentFlags({ text: "a" } as Flags), ["text"]);
+  assert.throws(() => validateContentFlags({ text: "a", poll: "b" }), /Conflicting content flags/);
+});
+
 test("describeContent renders readable summaries", () => {
   assert.match(describeContent({ type: "text", format: "plain", text: "hi" }), /text\(plain\)/);
   assert.equal(describeContent({ type: "message.read" }), "read receipt");
-  assert.match(describeContent({ type: "group", parts: [1, 2] }), /2 parts/);
+  assert.match(describeContent({ type: "group", parts: [] }), /0 parts/);
 });

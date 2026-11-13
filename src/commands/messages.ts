@@ -3,44 +3,48 @@
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { pageItems, handleOf } from "../client.js";
-import { formatTime, summarizeContent } from "../output.js";
-import { usageError } from "../errors.js";
+import type { ParseArgsOptionsConfig } from "node:util";
 
-const listQuery = (flags) => {
-  const query = {};
-  const map = {
-    platform: "platform",
-    direction: "direction",
-    order: "order",
-    "order-by": "orderBy",
-    space: "spaceId",
-    resource: "resourceId",
-    "perspective-user": "perspectiveUserId",
-    "created-since": "createdSince",
-    "created-before": "createdBefore",
-    "updated-since": "updatedSince",
-    "updated-before": "updatedBefore",
-    "exclude-content-types": "excludeContentTypes",
-    "page-token": "pageToken",
-  };
-  for (const [flag, key] of Object.entries(map)) {
-    if (flags[flag] !== undefined) query[key] = flags[flag];
+import { handleOf, nextPageToken, pageItems } from "../client.js";
+import { formatTime, summarizeContent, type TableColumn } from "../output.js";
+import { usageError } from "../errors.js";
+import type { CommandContext, Flags, MessageRecord } from "../types.js";
+
+/** Builds the SDK query object from list flags. */
+const listQuery = (flags: Flags): Record<string, string | number> => {
+  const query: Record<string, string | number> = {};
+  const map: Array<[keyof Flags, string]> = [
+    ["platform", "platform"],
+    ["direction", "direction"],
+    ["order", "order"],
+    ["order-by", "orderBy"],
+    ["space", "spaceId"],
+    ["resource", "resourceId"],
+    ["perspective-user", "perspectiveUserId"],
+    ["created-since", "createdSince"],
+    ["created-before", "createdBefore"],
+    ["updated-since", "updatedSince"],
+    ["updated-before", "updatedBefore"],
+    ["exclude-content-types", "excludeContentTypes"],
+    ["page-token", "pageToken"],
+  ];
+  for (const [flag, key] of map) {
+    const value = flags[flag];
+    if (typeof value === "string") query[key] = value;
   }
   if (flags["page-size"] !== undefined) query.pageSize = Number(flags["page-size"]);
   return query;
 };
 
-/** Columns shared by the list and get views. */
-const columns = [
-  { header: "ID", value: (m) => m.id },
-  { header: "TIME", value: (m) => formatTime(m.createdAt) },
-  { header: "PLATFORM", value: (m) => m.platform },
-  { header: "DIRECTION", value: (m) => m.direction },
-  { header: "STATUS", value: (m) => m.status },
-  { header: "FROM", value: (m) => handleOf(m.sentBy) },
-  { header: "TO", value: (m) => handleOf(m.receivedBy) },
-  { header: "CONTENT", value: (m) => summarizeContent(m.content) },
+const columns: Array<TableColumn<MessageRecord>> = [
+  { header: "ID", value: (message) => message.id },
+  { header: "TIME", value: (message) => formatTime(message.createdAt) },
+  { header: "PLATFORM", value: (message) => message.platform },
+  { header: "DIRECTION", value: (message) => message.direction },
+  { header: "STATUS", value: (message) => message.status },
+  { header: "FROM", value: (message) => handleOf(message.sentBy) },
+  { header: "TO", value: (message) => handleOf(message.receivedBy) },
+  { header: "CONTENT", value: (message) => summarizeContent(message.content) },
 ];
 
 export const list = {
@@ -60,17 +64,16 @@ export const list = {
     "page-size": { type: "string" },
     "page-token": { type: "string" },
     limit: { type: "string" },
-  },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, out } = ctx;
+  async run({ client, projectId, flags, out }: CommandContext): Promise<void> {
     const limit = flags.limit ? Number(flags.limit) : undefined;
     if (limit !== undefined && (Number.isNaN(limit) || limit <= 0)) {
       throw usageError("--limit must be a positive number.");
     }
 
-    const collected = [];
-    let pageToken = flags["page-token"];
+    const collected: MessageRecord[] = [];
+    let pageToken: string | undefined = flags["page-token"];
     let pages = 0;
 
     do {
@@ -82,9 +85,9 @@ export const list = {
           ...(limit && !flags["page-size"] ? { pageSize: Math.min(limit, 200) } : {}),
         },
       });
-      const items = pageItems(page);
-      collected.push(...items);
-      pageToken = page?.nextPageToken;
+
+      collected.push(...pageItems<MessageRecord>(page));
+      pageToken = nextPageToken(page);
       pages += 1;
       if (limit && collected.length >= limit) break;
       if (pages >= 50) break;
@@ -98,13 +101,16 @@ export const list = {
 };
 
 export const get = {
-  options: {},
-  async run(ctx) {
-    const { client, projectId, positionals, out } = ctx;
+  options: {} as const satisfies ParseArgsOptionsConfig,
+
+  async run({ client, projectId, positionals, out }: CommandContext): Promise<void> {
     const messageId = positionals[0];
     if (!messageId) throw usageError("Usage: photon-msg messages get <messageId>");
 
-    const message = await client.projects.getMessage({ path: { id: projectId, messageId } });
+    const message = (await client.projects.getMessage({
+      path: { id: projectId, messageId },
+    })) as unknown as MessageRecord;
+
     out.data(message);
     out.heading(`message ${message.id}`);
     out.keyValue([
@@ -127,21 +133,20 @@ export const watch = {
     direction: { type: "string" },
     interval: { type: "string" },
     for: { type: "string" },
-    "since": { type: "string" },
-  },
+    since: { type: "string" },
+  } as const satisfies ParseArgsOptionsConfig,
 
-  async run(ctx) {
-    const { client, projectId, flags, out } = ctx;
+  async run({ client, projectId, flags, out }: CommandContext): Promise<void> {
     const intervalMs = Math.max(1, Number(flags.interval ?? 2)) * 1000;
     const durationMs = flags.for ? Number(flags.for) * 1000 : 0;
     const createdSince = flags.since ? new Date(flags.since).toISOString() : new Date().toISOString();
-    const deadline = durationMs ? Date.now() + durationMs : Infinity;
+    const deadline = durationMs ? Date.now() + durationMs : Number.POSITIVE_INFINITY;
 
-    const seen = new Set();
+    const seen = new Set<string>();
     if (!flags.quiet) out.info(`watching from ${createdSince}, every ${intervalMs / 1000}s (ctrl-c to stop)`);
 
     while (Date.now() < deadline) {
-      let pageToken;
+      let pageToken: string | undefined;
       do {
         const page = await client.projects.listMessages({
           path: { id: projectId },
@@ -155,13 +160,14 @@ export const watch = {
             ...(pageToken ? { pageToken } : {}),
           },
         });
-        for (const message of pageItems(page)) {
+
+        for (const message of pageItems<MessageRecord>(page)) {
           if (seen.has(message.id)) continue;
           seen.add(message.id);
           // JSON lines so the output can be piped straight into another process.
           process.stdout.write(`${JSON.stringify(message)}\n`);
         }
-        pageToken = page?.nextPageToken;
+        pageToken = nextPageToken(page);
       } while (pageToken);
 
       await sleep(intervalMs);

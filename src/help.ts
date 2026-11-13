@@ -2,12 +2,45 @@
  * Help text. Kept as data so `--help` output stays consistent across commands.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+interface PackageJson {
+  name?: string;
+  version?: string;
+}
+
+/**
+ * Reads the version from the nearest package.json.
+ *
+ * This module can be loaded from `dist/` (published) or `.test-build/src/`
+ * (compiled tests), so the manifest is found by walking up rather than assuming
+ * a fixed depth. Walking up also survives a change to the output layout.
+ */
+function readVersion(): string {
+  let directory = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 5; depth += 1) {
+    const candidate = join(directory, "package.json");
+    if (existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(readFileSync(candidate, "utf8")) as PackageJson;
+        if (pkg.version && (pkg.name === undefined || pkg.name === "photon-msg")) {
+          return pkg.version;
+        }
+      } catch {
+        // Fall through to the parent directory.
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return "0.0.0";
+}
 
 /** Single source of truth for the version: package.json. */
-export const VERSION = JSON.parse(
-  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-).version;
+export const VERSION: string = readVersion();
 
 export const MAIN_HELP = `photon-msg ${VERSION} — send and read messages through the Photon API
 
@@ -68,7 +101,7 @@ lines cannot: the recipient must message the line first, and the API answers
 403 SHARED_LINE_INBOUND_REQUIRED until they do.
 `;
 
-export const COMMAND_HELP = {
+export const COMMAND_HELP: Record<string, string> = {
   send: `photon-msg send — send one message
 
 DESTINATION
@@ -137,7 +170,7 @@ not that the recipient has seen it.
 
   <path|url>  --content-type <mime>
 `,
-  "typing": `photon-msg typing — typing indicator
+  typing: `photon-msg typing — typing indicator
 
   --space <spaceId>  --as <agent>  --on | --off
 `,

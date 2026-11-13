@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { resolveConfig, requireCredentials, redact } from "../src/config.js";
-import { EXIT, PROBLEM_HINTS, toCliError, errorPayload, usageError } from "../src/errors.js";
+import { EXIT, PROBLEM_HINTS, toCliError, errorPayload, usageError, CliError } from "../src/errors.js";
 import { route, parseOptions } from "../src/args.js";
 
 test("flags win over environment and config file", () => {
@@ -28,13 +28,18 @@ test("environment wins over the config file", () => {
 test("missing credentials raise a usage error naming both", () => {
   assert.throws(
     () => requireCredentials(resolveConfig({ flags: {}, env: {}, file: {} })),
-    (error) => error.exitCode === EXIT.USAGE && /API key/.test(error.message) && /project ID/.test(error.message),
+    (error: unknown) =>
+      error instanceof CliError &&
+      error.exitCode === EXIT.USAGE &&
+      /API key/.test(error.message) &&
+      /project ID/.test(error.message),
   );
 });
 
 test("redact keeps a recognizable prefix and suffix", () => {
   assert.match(redact("pho_sk_0123456789abcdef"), /^pho_sk_0…cdef$/);
   assert.equal(redact(""), "");
+  assert.equal(redact(undefined), "");
 });
 
 test("API errors map to exit codes and hints by status", () => {
@@ -42,9 +47,13 @@ test("API errors map to exit codes and hints by status", () => {
   assert.equal(unauthorized.exitCode, EXIT.AUTH);
   assert.equal(unauthorized.hint, PROBLEM_HINTS.NOT_AUTHENTICATED);
 
-  const forbidden = toCliError({ status: 403, message: "no", body: { code: "SHARED_LINE_INBOUND_REQUIRED", detail: "x" } });
+  const forbidden = toCliError({
+    status: 403,
+    message: "no",
+    body: { code: "SHARED_LINE_INBOUND_REQUIRED", detail: "x" },
+  });
   assert.equal(forbidden.exitCode, EXIT.FORBIDDEN);
-  assert.match(forbidden.hint, /cannot message someone who has not written/);
+  assert.match(forbidden.hint ?? "", /cannot message someone who has not written/);
 
   const missing = toCliError({ status: 404, message: "gone", body: {} });
   assert.equal(missing.exitCode, EXIT.NOT_FOUND);
@@ -56,8 +65,12 @@ test("API errors carry request metadata for support", () => {
     message: "bad",
     body: { code: "VALIDATION_FAILED", detail: "field x", requestId: "pho_req_1", type: "t" },
   });
-  assert.equal(error.details.requestId, "pho_req_1");
-  assert.equal(error.details.code, "VALIDATION_FAILED");
+  assert.deepEqual(error.details, {
+    code: "VALIDATION_FAILED",
+    status: 422,
+    requestId: "pho_req_1",
+    type: "t",
+  });
   assert.match(error.message, /field x/);
 });
 
@@ -80,7 +93,7 @@ test("errorPayload is JSON-serializable", () => {
 const routes = {
   send: { options: { to: { type: "string" } } },
   "messages list": { options: { limit: { type: "string" } } },
-};
+} as const;
 
 test("route prefers the longest match", () => {
   assert.equal(route(["messages", "list", "--limit", "5"], routes).name, "messages list");
@@ -98,10 +111,16 @@ test("route leaves the remaining arguments intact", () => {
 });
 
 test("unknown options are reported as usage errors", () => {
-  assert.throws(() => parseOptions(["--nope"], {}), (error) => error.exitCode === EXIT.USAGE);
+  assert.throws(() => parseOptions(["--nope"], {}), (error: unknown) => error instanceof CliError && error.exitCode === EXIT.USAGE);
 });
 
 test("multiple string options collect into an array", () => {
-  const { values } = parseOptions(["--tag", "a", "--tag", "b"], { tag: { type: "string", multiple: true } });
-  assert.deepEqual(values.tag, ["a", "b"]);
+  const { flags } = parseOptions(["--tag", "a", "--tag", "b"], { tag: { type: "string", multiple: true } });
+  assert.deepEqual(flags.text, undefined);
+  assert.deepEqual((flags as Record<string, unknown>).tag, ["a", "b"]);
+});
+
+test("--no-color is accepted even though parseArgs lacks allowNegative", () => {
+  const { flags } = parseOptions(["--no-color"], {});
+  assert.equal(flags.color, false);
 });
